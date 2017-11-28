@@ -5,21 +5,20 @@ REM call :Test
 REM call :CleanAllFileNames C:\Users\vcase\AudioBooks\delme\book
 REM goto :EOF
 
-set /p DriveIndex="Drive Index (0..N): "
 set /p BookName="Book Name: "
 set /p AuthorName="Author: "
 set /p CDNumStart="CD Start Index: "
-set /p CDNumTot="CDs Total: "
+set /p CDNumEnd="CD Last Index: "
 
 set BookPath=%HOMEPATH%\AudioBooks\%AuthorName%\%BookName%
 mkdir %BookPath%
 
-FOR /L %%N IN (%CDNumStart%, 1, %CDNumTot%) DO (
+FOR /L %%N IN (%CDNumStart%, 1, %CDNumEnd%) DO (
   ECHO\
   ECHO\
-  ECHO Please insert CD# %%N ... and press any key to continue
+  echo Please insert CD# %%N and press any key to continue...
   pause
-  REM You need the id3 executable downloaded/installed for the next line:
+  REM You need the id3 if you are to uncomment the following line ... don't :)
   REM id3 -l "!BookName!" -a "!AuthorName!" -n %%N "!FileName!"
   call :ProcessCD %%N
   call :EjectCD
@@ -35,8 +34,8 @@ SET CdIndex=%CdIndex:~-2%
 SET CdOutputPath=%BookPath%\wip_cd_%CdIndex%
 rmdir /S /Q %CdOutputPath% 2>nul
 mkdir %CdOutputPath%
-ECHO Ripping CD# %1 to temp dir %CdOutputPath% from drive %DriveIndex% ...
-"C:\Program Files (x86)\freac\freaccmd" -cd %DriveIndex% -t 600 -track all -d "!CdOutputPath!"
+ECHO Ripping CD# %1 to temp dir %CdOutputPath% ...
+"C:\Program Files (x86)\freac\freaccmd" -t 600 -track all -d "!CdOutputPath!"
 call :NormalizeTrackNamesAll %CdIndex% %CdOutputPath%
 ECHO Installing Ripped tracks to %BookPath%...
 move %CdOutputPath%\* %BookPath%
@@ -94,7 +93,7 @@ goto :EOF
 set BookName=book
 set AuthorName=delme
 set CDNumStart=1
-set CDNumTot=1
+set CDNumEnd=1
 
 set BookPath=%HOMEPATH%\AudioBooks\%AuthorName%\%BookName%
 mkdir %BookPath%
