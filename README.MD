@@ -1,1 +1,0 @@
-# Rip cds scripts
