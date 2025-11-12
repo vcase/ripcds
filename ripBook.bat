@@ -1,8 +1,9 @@
-echo OFF
+@echo off
 SETLOCAL ENABLEEXTENSIONS ENABLEDELAYEDEXPANSION
 
+REM Uncomment the following for quick testing
 REM call :Test
-REM call :CleanAllFileNames C:\Users\vcase\AudioBooks\delme\book
+REM call :CleanAllFileNames "%USERPROFILE%\AudioBooks\delme\book"
 REM goto :EOF
 
 set /p BookName="Book Name: "
@@ -10,120 +11,138 @@ set /p AuthorName="Author: "
 set /p CDNumStart="CD Start Index: "
 set /p CDNumEnd="CD Last Index: "
 
-set BookPath=%HOMEPATH%\AudioBooks\%AuthorName%\%BookName%
-mkdir %BookPath%
+set "BookPath=%USERPROFILE%\AudioBooks\%AuthorName%\%BookName%"
+if not exist "%BookPath%" mkdir "%BookPath%"
 
-FOR /L %%N IN (%CDNumStart%, 1, %CDNumEnd%) DO (
-  ECHO\
-  ECHO\
-  echo Please insert CD# %%N and press any key to continue...
+:: --- Verify that at least one CD/DVD drive exists ---
+echo Checking for CD/DVD drives...
+powershell -NoProfile -Command ^
+  "if (-not (Get-CimInstance Win32_CDROMDrive)) { exit 1 }"
+if errorlevel 1 (
+  echo ERROR: No CD/DVD drive detected. Please connect or power on your drive.
   pause
-  REM You need the id3 if you are to uncomment the following line ... don't :)
-  REM id3 -l "!BookName!" -a "!AuthorName!" -n %%N "!FileName!"
+  exit /b
+)
+
+for /L %%N in (%CDNumStart%,1,%CDNumEnd%) do (
+  echo.
+  echo Please insert CD# %%N and press any key to continue...
+  pause >nul
   call :ProcessCD %%N
   call :EjectCD
-  ECHO Completed CD# %%N !
+  echo Completed CD# %%N !
 )
 goto :DONE
 
 
-
 :ProcessCD
-SET CdIndex=00%1
-SET CdIndex=%CdIndex:~-2%
-SET CdOutputPath=%BookPath%\wip_cd_%CdIndex%
-rmdir /S /Q %CdOutputPath% 2>nul
-mkdir %CdOutputPath%
-ECHO Ripping CD# %1 to temp dir %CdOutputPath% ...
-"C:\Program Files (x86)\freac\freaccmd" -t 600 -track all -d "!CdOutputPath!"
-call :NormalizeTrackNamesAll %CdIndex% %CdOutputPath%
-ECHO Installing Ripped tracks to %BookPath%...
-move %CdOutputPath%\* %BookPath%
-rmdir /S /Q %CdOutputPath%
+set "CdIndex=00%~1"
+set "CdIndex=%CdIndex:~-2%"
+set "CdOutputPath=%BookPath%\wip_cd_%CdIndex%"
+
+rmdir /S /Q "%CdOutputPath%" 2>nul
+mkdir "%CdOutputPath%"
+
+echo Ripping CD# %~1 to temp dir "%CdOutputPath%" ...
+"C:\Program Files\freac\freaccmd.exe" -t 600 -track all -d "%CdOutputPath%"
+if errorlevel 1 (
+  echo ERROR: freaccmd failed.
+  pause
+)
+
+call :NormalizeTrackNamesAll "%CdIndex%" "%CdOutputPath%"
+echo Installing ripped tracks to "%BookPath%"...
+move "%CdOutputPath%\*" "%BookPath%" >nul
+rmdir /S /Q "%CdOutputPath%"
 goto :EOF
 
 
 :NormalizeTrackNamesAll
-setlocal ENABLEDELAYEDEXPANSION 
-SET CDNUM=%1
-SET CDPATH=%2
-SET /a COUNT=0
-pushd %CDPATH%
-call :CleanAllFileNames %CDPATH%
-for /f "delims=" %%i in ('dir /B /o:d /A:-D') do (
-  set /a COUNT += 1
-  call :NormalizeTrackName %CDNUM% %CDPATH% "%%i" !COUNT!
+setlocal ENABLEDELAYEDEXPANSION
+set "CDNUM=%~1"
+set "CDPATH=%~2"
+set /a COUNT=0
+
+pushd "%CDPATH%" || (echo ERROR: cannot access "%CDPATH%" & exit /b)
+call :CleanAllFileNames "%CDPATH%"
+
+for /f "delims=" %%i in ('dir /B /A:-D /O:D') do (
+  set /a COUNT+=1
+  call :NormalizeTrackName "%CDNUM%" "%CDPATH%" "%%~i" "!COUNT!"
 )
 popd
+endlocal
 goto :EOF
 
 
-
 :NormalizeTrackName
-SET CDNUM=0%1
-SET CDNUM=%CDNUM:~-2%
-SET CDPATH=%2
-SET TNAME=%3
-set TINDEX=0%4%
-set TINDEX=%TINDEX:~-2%
-set NewName=cd%CDNUM%_t%TINDEX%.mp3
-ren %TNAME% %NewName% 
+setlocal
+set "CDNUM=0%~1"
+set "CDNUM=%CDNUM:~-2%"
+set "CDPATH=%~2"
+set "TNAME=%~3"
+set "TINDEX=0%~4"
+set "TINDEX=%TINDEX:~-2%"
+set "NewName=cd%CDNUM%_t%TINDEX%.mp3"
+
+ren "%CDPATH%\%TNAME%" "%NewName%" 2>nul
+endlocal
 goto :EOF
 
 
 :EjectCD
-echo Ejecting CD
-@echo off
-echo Set oWMP = CreateObject("WMPlayer.OCX.7")  >> %temp%\temp.vbs
-echo Set colCDROMs = oWMP.cdromCollection       >> %temp%\temp.vbs
-echo For i = 0 to colCDROMs.Count-1             >> %temp%\temp.vbs
-echo colCDROMs.Item(i).Eject                    >> %temp%\temp.vbs
-echo next                                       >> %temp%\temp.vbs
-echo oWMP.close                                 >> %temp%\temp.vbs
-%temp%\temp.vbs
-timeout /t 1
-del %temp%\temp.vbs
+echo Ejecting CD...
+set "VBSFile=%temp%\ejectcd.vbs"
+(
+  echo Set oWMP = CreateObject("WMPlayer.OCX.7")
+  echo Set colCDROMs = oWMP.cdromCollection
+  echo For i = 0 To colCDROMs.Count - 1
+  echo   colCDROMs.Item(i).Eject
+  echo Next
+  echo oWMP.close
+) > "%VBSFile%"
+
+cscript //nologo "%VBSFile%" >nul
+timeout /t 1 /nobreak >nul
+del "%VBSFile%" 2>nul
 goto :EOF
 
 
-
-
-
 :Test
-set BookName=book
-set AuthorName=delme
-set CDNumStart=1
-set CDNumEnd=1
+set "BookName=book"
+set "AuthorName=delme"
+set "CDNumStart=1"
+set "CDNumEnd=1"
 
-set BookPath=%HOMEPATH%\AudioBooks\%AuthorName%\%BookName%
-mkdir %BookPath%
-
-call :NormalizeTrackNamesAll 1 %BookPath%
+set "BookPath=%USERPROFILE%\AudioBooks\%AuthorName%\%BookName%"
+if not exist "%BookPath%" mkdir "%BookPath%"
+call :NormalizeTrackNamesAll 1 "%BookPath%"
 goto :EOF
 
 
 :CleanAllFileNames
-setlocal DISABLEDELAYEDEXPANSION 
-set DIRNAME=%1
-pushd %DIRNAME%
-
-for /F "delims=" %%i in ('dir /b /A:-D %DIRNAME%') do (
-  call :CleanFileName "%%i"
+setlocal DISABLEDELAYEDEXPANSION
+set "DIRNAME=%~1"
+pushd "%DIRNAME%" || (echo ERROR: cannot access "%DIRNAME%" & exit /b)
+for /F "delims=" %%i in ('dir /b /A:-D') do (
+  call :CleanFileName "%%~i"
 )
+popd
+endlocal
 goto :EOF
 
 
 :CleanFileName
-  set f1=%1
-  set f2=%f1:!=%
-  ren %f1% %f2%
+setlocal
+set "f1=%~1"
+set "f2=%f1:!=%"
+if not "%f1%"=="%f2%" ren "%f1%" "%f2%"
+endlocal
 goto :EOF
-
 
 
 :DONE
-ECHO\
-ECHO DONE!
+echo.
+echo DONE!
+pause
 goto :EOF
-
-
