@@ -1,7 +1,7 @@
 @echo off
 SETLOCAL ENABLEEXTENSIONS ENABLEDELAYEDEXPANSION
 
-REM Uncomment the following for quick testing
+REM Uncomment for quick testing
 REM call :Test
 REM call :CleanAllFileNames "%USERPROFILE%\AudioBooks\delme\book"
 REM goto :EOF
@@ -23,6 +23,10 @@ if errorlevel 1 (
   pause
   exit /b
 )
+
+:: --- Optional: display detected drive(s) ---
+powershell -NoProfile -Command ^
+  "Get-CimInstance Win32_CDROMDrive | Select-Object Drive, Name | Format-Table -AutoSize"
 
 for /L %%N in (%CDNumStart%,1,%CDNumEnd%) do (
   echo.
@@ -84,7 +88,6 @@ set "TNAME=%~3"
 set "TINDEX=0%~4"
 set "TINDEX=%TINDEX:~-2%"
 set "NewName=cd%CDNUM%_t%TINDEX%.mp3"
-
 ren "%CDPATH%\%TNAME%" "%NewName%" 2>nul
 endlocal
 goto :EOF
@@ -92,19 +95,11 @@ goto :EOF
 
 :EjectCD
 echo Ejecting CD...
-set "VBSFile=%temp%\ejectcd.vbs"
-(
-  echo Set oWMP = CreateObject("WMPlayer.OCX.7")
-  echo Set colCDROMs = oWMP.cdromCollection
-  echo For i = 0 To colCDROMs.Count - 1
-  echo   colCDROMs.Item(i).Eject
-  echo Next
-  echo oWMP.close
-) > "%VBSFile%"
-
-cscript //nologo "%VBSFile%" >nul
+powershell -NoProfile -Command ^
+  "$drives = Get-CimInstance Win32_CDROMDrive; " ^
+  "foreach ($d in $drives) { " ^
+  "  try { (New-Object -ComObject Shell.Application).Namespace(17).ParseName($d.Drive).InvokeVerb('Eject') } catch {} }"
 timeout /t 1 /nobreak >nul
-del "%VBSFile%" 2>nul
 goto :EOF
 
 
