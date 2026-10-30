@@ -5,10 +5,14 @@ use crate::models::DiscInfo;
 use crate::powershell;
 
 #[cfg(windows)]
+const USER_AGENT: &str = "RipBook/0.1.0 (https://github.com/vcase/ripcds)";
+
+#[cfg(windows)]
 const DISC_SCRIPT: &str = r##"
 param(
     [Parameter(Mandatory = $true)][string]$Drive,
     [string]$Lookup = "false",
+    [string]$Action = "info",
     [string]$UserAgent = "RipBook/0.1.0"
 )
 
@@ -24,33 +28,45 @@ using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 
-public static class RipBookTocReader
+public static class RipBookDisc
 {
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern IntPtr CreateFileW(string lpFileName, uint dwDesiredAccess, uint dwShareMode, IntPtr lpSecurityAttributes, uint dwCreationDisposition, uint dwFlagsAndAttributes, IntPtr hTemplateFile);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool DeviceIoControl(IntPtr hDevice, uint dwIoControlCode, IntPtr lpInBuffer, uint nInBufferSize, byte[] lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+    [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+    private static extern bool DeviceIoControlRead(IntPtr hDevice, uint dwIoControlCode, IntPtr lpInBuffer, uint nInBufferSize, byte[] lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+
+    [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+    private static extern bool DeviceIoControlWrite(IntPtr hDevice, uint dwIoControlCode, byte[] lpInBuffer, uint nInBufferSize, IntPtr lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
-    public static byte[] ReadToc(string devicePath)
-    {
-        const uint GENERIC_READ = 0x80000000;
-        const uint FILE_SHARE_READ = 0x00000001;
-        const uint FILE_SHARE_WRITE = 0x00000002;
-        const uint OPEN_EXISTING = 3;
-        const uint IOCTL_CDROM_READ_TOC = 0x00024000;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint OPEN_EXISTING = 3;
+    private const uint IOCTL_CDROM_READ_TOC = 0x00024000;
+    private const uint IOCTL_STORAGE_MEDIA_REMOVAL = 0x002D4804;
+    private const uint IOCTL_STORAGE_EJECT_MEDIA = 0x002D4808;
 
+    private static IntPtr OpenDevice(string devicePath)
+    {
         IntPtr handle = CreateFileW(devicePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
         if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+
+        return handle;
+    }
+
+    public static byte[] ReadToc(string devicePath)
+    {
+        IntPtr handle = OpenDevice(devicePath);
 
         try
         {
             byte[] buffer = new byte[804];
             uint returned;
-            if (!DeviceIoControl(handle, IOCTL_CDROM_READ_TOC, IntPtr.Zero, 0, buffer, (uint)buffer.Length, out returned, IntPtr.Zero))
+            if (!DeviceIoControlRead(handle, IOCTL_CDROM_READ_TOC, IntPtr.Zero, 0, buffer, (uint)buffer.Length, out returned, IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
 
             return buffer;
@@ -60,10 +76,51 @@ public static class RipBookTocReader
             CloseHandle(handle);
         }
     }
+
+    public static void Eject(string devicePath)
+    {
+        IntPtr handle = OpenDevice(devicePath);
+
+        try
+        {
+            byte[] allowRemoval = new byte[] { 0 };
+            uint returned;
+
+            DeviceIoControlWrite(handle, IOCTL_STORAGE_MEDIA_REMOVAL, allowRemoval, (uint)allowRemoval.Length, IntPtr.Zero, 0, out returned, IntPtr.Zero);
+
+            if (!DeviceIoControlWrite(handle, IOCTL_STORAGE_EJECT_MEDIA, null, 0, IntPtr.Zero, 0, out returned, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
 }
 "@
 
-$buffer = [RipBookTocReader]::ReadToc($devicePath)
+if ($Action -eq "eject") {
+    $primaryError = $null
+
+    try {
+        [RipBookDisc]::Eject($devicePath)
+        [pscustomobject]@{ message = "Ejected $Drive." } | ConvertTo-Json -Compress
+        return
+    } catch {
+        $primaryError = $_.Exception.Message
+    }
+
+    try {
+        $root = $Drive + "\"
+        (New-Object -ComObject Shell.Application).Namespace(17).ParseName($root).InvokeVerb("Eject")
+        [pscustomobject]@{ message = "Ejected $Drive." } | ConvertTo-Json -Compress
+        return
+    } catch {
+        throw "Could not eject ${Drive}. $primaryError $($_.Exception.Message)"
+    }
+}
+
+$buffer = [RipBookDisc]::ReadToc($devicePath)
 $length = (([int]$buffer[0]) -shl 8) -bor ([int]$buffer[1])
 if ($length -lt 2) { throw "The drive returned an empty table of contents." }
 
@@ -236,6 +293,31 @@ pub async fn lookup_metadata(drive: &str) -> Result<DiscInfo, String> {
     inspect(drive, true).await
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+pub async fn eject(drive: &str) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let _ = drive;
+        Err("Ejecting a disc through the Windows driver is only supported on Windows.".to_string())
+    }
+
+    #[cfg(windows)]
+    {
+        powershell::run_script(
+            DISC_SCRIPT,
+            &[
+                ("Drive", drive),
+                ("Action", "eject"),
+                ("Lookup", "false"),
+                ("UserAgent", USER_AGENT),
+            ],
+        )
+        .await?;
+
+        Ok(())
+    }
+}
+
 async fn inspect(drive: &str, lookup: bool) -> Result<DiscInfo, String> {
     #[cfg(not(windows))]
     {
@@ -249,11 +331,9 @@ async fn inspect(drive: &str, lookup: bool) -> Result<DiscInfo, String> {
             DISC_SCRIPT,
             &[
                 ("Drive", drive),
+                ("Action", "info"),
                 ("Lookup", if lookup { "true" } else { "false" }),
-                (
-                    "UserAgent",
-                    "RipBook/0.1.0 (https://github.com/vcase/ripcds)",
-                ),
+                ("UserAgent", USER_AGENT),
             ],
         )
         .await?;

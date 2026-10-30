@@ -898,45 +898,30 @@ Get-CimInstance Win32_CDROMDrive | ForEach-Object {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn drive_letter_for_eject(drive: &str) -> Result<String, String> {
+    let value = drive.trim();
+    let upper = value.to_ascii_uppercase();
+
+    if upper.len() == 1 && upper.as_bytes()[0].is_ascii_uppercase() {
+        return Ok(format!("{upper}:"));
+    }
+
+    if upper.len() == 2 && upper.ends_with(':') && upper.as_bytes()[0].is_ascii_uppercase() {
+        return Ok(upper);
+    }
+
+    resolve_drive(value).map(|(_, letter)| letter)
+}
+
 async fn eject_drive_inner(drive: &str) -> Result<(), String> {
     #[cfg(not(windows))]
     let _ = drive;
 
     #[cfg(windows)]
     {
-        let (_, letter) = resolve_drive(drive)?;
-        let letter = letter.replace('\'', "''");
-        let script = format!(
-            r#"
-$drives = @(Get-CimInstance Win32_CDROMDrive)
-if ($drives.Count -eq 0) {{ exit 2 }}
-$drive = $drives | Where-Object {{ $_.Drive -eq '{letter}' }} | Select-Object -First 1
-if (-not $drive) {{ exit 3 }}
-try {{ (New-Object -ComObject Shell.Application).Namespace(17).ParseName($drive.Drive).InvokeVerb('Eject') }} catch {{ exit 1 }}
-"#
-        );
-
-        let mut command = Command::new("powershell");
-        command
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
-
-        let output = command
-            .output()
-            .await
-            .map_err(|e| format!("Could not run PowerShell: {e}"))?;
-
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if error.is_empty() {
-                "The drive did not accept the eject command.".to_string()
-            } else {
-                error
-            });
-        }
-
+        let letter = drive_letter_for_eject(drive)?;
+        disc::eject(&letter).await?;
         return Ok(());
     }
 
@@ -1084,5 +1069,12 @@ mod tests {
         fs::write(dir.path().join("notes.txt"), b"not audio").unwrap();
 
         assert_eq!(count_audio_files(dir.path()), 1);
+    }
+
+    #[test]
+    fn normalizes_drive_letters_for_eject() {
+        assert_eq!(drive_letter_for_eject("d").unwrap(), "D:");
+        assert_eq!(drive_letter_for_eject("e:").unwrap(), "E:");
+        assert_eq!(drive_letter_for_eject(" D: ").unwrap(), "D:");
     }
 }

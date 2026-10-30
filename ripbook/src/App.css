@@ -316,6 +316,18 @@ h2 {
   color: #344054;
 }
 
+.field-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.field-title .button {
+  padding: 3px 8px;
+  font-size: 0.72rem;
+}
+
 .field small {
   color: var(--muted);
   font-size: 0.74rem;
@@ -370,18 +382,6 @@ select:focus {
 
 .install-row {
   margin-top: 2px;
-}
-
-.metadata-row {
-  flex-direction: row;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.metadata-row .form-hint {
-  flex: 1;
-  min-width: 220px;
 }
 
 .form-actions {

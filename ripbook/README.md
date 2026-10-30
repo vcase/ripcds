@@ -9,7 +9,9 @@ resumable queue of `cdNN_tNN.mp3` files. It is the GUI successor to the
 - Prompts for author, title, first disc, and last disc.
 - Can read the inserted disc's table of contents and look it up on MusicBrainz
   to pre-fill author, title, and (when MusicBrainz knows the release) the total
-  number of discs. Audio CDs themselves do not carry a “disc N of M” field, so
+  number of discs. There is a **Read from disc** button next to Author, and
+  RipBook also tries this automatically when Create is pressed with a blank
+  author or title. Audio CDs themselves do not carry a “disc N of M” field, so
   the disc range can still be entered or corrected manually.
 - Lets you update the number of discs in a book later, so a book started with
   the default single-disc range can be extended without re-ripping anything.

@@ -71,7 +71,18 @@ export function NewBookForm({
         }}
       >
         <label className="field">
-          <span>Author</span>
+          <span className="field-title">
+            Author
+            <button
+              type="button"
+              className="button button--ghost button--small"
+              onClick={onLookupDisc}
+              disabled={busy || metadataBusy}
+              title="Read author, title, and disc count from the inserted disc"
+            >
+              {metadataBusy ? "Reading…" : "Read from disc"}
+            </button>
+          </span>
           <input
             value={form.author}
             onChange={(event) => onChange({ author: event.target.value })}
@@ -117,21 +128,10 @@ export function NewBookForm({
           />
         </label>
 
-        <div className="field field--wide metadata-row">
-          <button
-            type="button"
-            className="button"
-            onClick={onLookupDisc}
-            disabled={busy || metadataBusy}
-          >
-            {metadataBusy ? "Reading disc…" : "Read disc metadata"}
-          </button>
-          <p className="form-hint">
-            Audio CDs do not store the total number of discs in a set, so set the
-            last disc up front (you can add discs later). If the inserted disc has
-            a MusicBrainz match, this fills in author, title, and the disc count.
-          </p>
-        </div>
+        <p className="form-hint field--wide">
+          Audio CDs do not store the total disc count. Use{" "}
+          <strong>Read from disc</strong> or enter it manually.
+        </p>
 
         <label className="field field--wide">
           <span>Audiobook library folder</span>
@@ -201,11 +201,21 @@ export function NewBookForm({
         </label>
 
         <div className="form-actions field--wide">
-          <button type="submit" className="button button--primary" disabled={busy}>
-            {busy ? "Preparing…" : "Create / open book"}
+          <button
+            type="submit"
+            className="button button--primary"
+            disabled={busy || metadataBusy}
+          >
+            {busy
+              ? "Preparing…"
+              : metadataBusy
+                ? "Reading disc…"
+                : "Create / open book"}
           </button>
           <span className="form-hint">
-            Existing books with the same author and title open in resume mode.
+            If author or title is blank, RipBook tries to read it from the
+            inserted disc before creating the book. Existing books with the same
+            author and title open in resume mode.
           </span>
         </div>
       </form>

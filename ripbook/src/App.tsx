@@ -10,12 +10,25 @@ import type {
   BookForm,
   BookManifest,
   BookSummary,
+  DiscInfo,
   DriveInfo,
   FreacInfo,
   LogPayload,
   StatePayload,
 } from "./types";
 import "./App.css";
+
+function metadataPatch(disc: DiscInfo, form: BookForm): Partial<BookForm> {
+  const patch: Partial<BookForm> = {};
+
+  if (disc.artist) patch.author = disc.artist;
+  if (disc.title) patch.title = disc.title;
+  if (disc.discCount && disc.discCount > 0) {
+    patch.lastDisc = form.firstDisc + disc.discCount - 1;
+  }
+
+  return patch;
+}
 
 function pickDrive(drives: DriveInfo[], preferred: string): string {
   const value = preferred.trim();
@@ -200,33 +213,78 @@ export default function App() {
   }, [manifest?.bookDir]);
 
   const handleCreate = async () => {
-    if (busy) return;
-    if (!form.author.trim()) {
-      setError("Author is required.");
+    if (busy || metadataBusy) return;
+
+    setError(null);
+    setNotice(null);
+
+    let currentForm = form;
+
+    if (
+      (!form.author.trim() || !form.title.trim()) &&
+      info &&
+      info.drives.length > 0
+    ) {
+      setMetadataBusy(true);
+      try {
+        const disc = await api.lookupDiscMetadata(drive);
+        const patch = metadataPatch(disc, form);
+        const merged: BookForm = {
+          ...form,
+          author: form.author.trim()
+            ? form.author
+            : (patch.author ?? form.author),
+          title: form.title.trim() ? form.title : (patch.title ?? form.title),
+          lastDisc: patch.lastDisc ?? form.lastDisc,
+        };
+
+        currentForm = merged;
+        setForm(merged);
+
+        if (!merged.author.trim() || !merged.title.trim()) {
+          setNotice(
+            `Could not fully pre-fill author and title from the disc. ${disc.message}`,
+          );
+        }
+      } catch (caught) {
+        setNotice(
+          `Could not read disc metadata: ${formatError(
+            caught,
+          )}. Enter the author and title manually.`,
+        );
+      } finally {
+        setMetadataBusy(false);
+      }
+    }
+
+    if (!currentForm.author.trim()) {
+      setError(
+        "Author is required. Insert the first disc and use “Read from disc”, or enter it manually.",
+      );
       return;
     }
-    if (!form.title.trim()) {
-      setError("Book title is required.");
+    if (!currentForm.title.trim()) {
+      setError(
+        "Book title is required. Insert the first disc and use “Read from disc”, or enter it manually.",
+      );
       return;
     }
-    if (form.firstDisc < 1) {
+    if (currentForm.firstDisc < 1) {
       setError("The first disc must be 1 or greater.");
       return;
     }
-    if (form.lastDisc < form.firstDisc) {
+    if (currentForm.lastDisc < currentForm.firstDisc) {
       setError("The last disc must be greater than or equal to the first disc.");
       return;
     }
 
     setBusy(true);
-    setError(null);
-    setNotice(null);
     try {
       const created = await api.createBook({
-        author: form.author.trim(),
-        title: form.title.trim(),
-        firstDisc: form.firstDisc,
-        lastDisc: form.lastDisc,
+        author: currentForm.author.trim(),
+        title: currentForm.title.trim(),
+        firstDisc: currentForm.firstDisc,
+        lastDisc: currentForm.lastDisc,
         audioRoot,
         drive,
         freaccmdPath: freacPath,
@@ -285,13 +343,7 @@ export default function App() {
     setNotice(null);
     try {
       const disc = await api.lookupDiscMetadata(drive);
-      const patch: Partial<BookForm> = {};
-
-      if (disc.artist) patch.author = disc.artist;
-      if (disc.title) patch.title = disc.title;
-      if (disc.discCount && disc.discCount > 0) {
-        patch.lastDisc = form.firstDisc + disc.discCount - 1;
-      }
+      const patch = metadataPatch(disc, form);
 
       if (Object.keys(patch).length > 0) {
         setForm((current) => ({ ...current, ...patch }));
