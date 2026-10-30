@@ -88,7 +88,7 @@ The supported path is GitHub Actions:
 
 1. Push the repository to GitHub.
 2. Open **Actions → Build Windows installer → Run workflow**.
-3. Download the `ripbook-windows-x64` artifact.
+3. Download the `ripbook-windows-x64-<run number>` artifact.
 
 Pushing a `v*` tag also creates a GitHub release and uploads the installer to it.
 
