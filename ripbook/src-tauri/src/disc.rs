@@ -25,8 +25,10 @@ $devicePath = "\\.\$Drive"
 
 Add-Type -TypeDefinition @"
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class RipBookDisc
 {
@@ -39,6 +41,9 @@ public static class RipBookDisc
     [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
     private static extern bool DeviceIoControlWrite(IntPtr hDevice, uint dwIoControlCode, byte[] lpInBuffer, uint nInBufferSize, IntPtr lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
 
+    [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+    private static extern bool DeviceIoControlInOut(IntPtr hDevice, uint dwIoControlCode, byte[] lpInBuffer, uint nInBufferSize, byte[] lpOutBuffer, uint nOutBufferSize, out uint lpBytesReturned, IntPtr lpOverlapped);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
@@ -47,6 +52,7 @@ public static class RipBookDisc
     private const uint FILE_SHARE_WRITE = 0x00000002;
     private const uint OPEN_EXISTING = 3;
     private const uint IOCTL_CDROM_READ_TOC = 0x00024000;
+    private const uint IOCTL_CDROM_READ_TOC_EX = 0x00024054;
     private const uint IOCTL_STORAGE_MEDIA_REMOVAL = 0x002D4804;
     private const uint IOCTL_STORAGE_EJECT_MEDIA = 0x002D4808;
 
@@ -75,6 +81,70 @@ public static class RipBookDisc
         {
             CloseHandle(handle);
         }
+    }
+
+    public static string[] ReadCdText(string devicePath)
+    {
+        IntPtr handle = OpenDevice(devicePath);
+
+        try
+        {
+            byte[] input = new byte[] { 0x05, 0x00, 0x00, 0x00 };
+            byte[] buffer = new byte[4 + 18 * 256];
+            uint returned;
+
+            if (!DeviceIoControlInOut(handle, IOCTL_CDROM_READ_TOC_EX, input, (uint)input.Length, buffer, (uint)buffer.Length, out returned, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+
+            return ParseCdText(buffer, Math.Min(buffer.Length, (int)returned));
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
+    private static string[] ParseCdText(byte[] buffer, int size)
+    {
+        List<KeyValuePair<int, int>> titlePacks = new List<KeyValuePair<int, int>>();
+        List<KeyValuePair<int, int>> performerPacks = new List<KeyValuePair<int, int>>();
+
+        for (int offset = 4; offset + 18 <= size; offset += 18)
+        {
+            int packType = buffer[offset];
+            int trackNumber = buffer[offset + 1] & 0x7F;
+            int sequenceNumber = buffer[offset + 2];
+            int blockNumber = (buffer[offset + 3] >> 4) & 0x07;
+
+            if (blockNumber != 0 || trackNumber != 0) continue;
+
+            if (packType == 0x80) titlePacks.Add(new KeyValuePair<int, int>(sequenceNumber, offset));
+            else if (packType == 0x81) performerPacks.Add(new KeyValuePair<int, int>(sequenceNumber, offset));
+        }
+
+        titlePacks.Sort((left, right) => left.Key.CompareTo(right.Key));
+        performerPacks.Sort((left, right) => left.Key.CompareTo(right.Key));
+
+        return new string[]
+        {
+            DecodeCdText(buffer, titlePacks),
+            DecodeCdText(buffer, performerPacks)
+        };
+    }
+
+    private static string DecodeCdText(byte[] buffer, List<KeyValuePair<int, int>> packs)
+    {
+        List<byte> bytes = new List<byte>();
+
+        foreach (KeyValuePair<int, int> pack in packs)
+        {
+            for (int i = 4; i < 16; i++) bytes.Add(buffer[pack.Value + i]);
+        }
+
+        int end = bytes.IndexOf(0);
+        if (end < 0) end = bytes.Count;
+
+        return Encoding.GetEncoding(28591).GetString(bytes.ToArray(), 0, end).Trim();
     }
 
     public static void Eject(string devicePath)
@@ -182,8 +252,20 @@ $discNumber = $null
 $discCount = $null
 $source = "CD table of contents"
 $message = "Found $trackCount audio track$(if ($trackCount -eq 1) { '' } else { 's' })."
+$lookupError = $null
+$cdTextArtist = $null
+$cdTextTitle = $null
 
 if ($Lookup -eq "true") {
+    try {
+        $cdText = [RipBookDisc]::ReadCdText($devicePath)
+        if ($cdText -and $cdText.Count -ge 2) {
+            if (-not [string]::IsNullOrWhiteSpace($cdText[0])) { $cdTextTitle = $cdText[0].Trim() }
+            if (-not [string]::IsNullOrWhiteSpace($cdText[1])) { $cdTextArtist = $cdText[1].Trim() }
+        }
+    } catch {
+    }
+
     try {
         $uri = "https://musicbrainz.org/ws/2/discid/${discId}?fmt=json&inc=artist-credits"
         $response = Invoke-RestMethod -Uri $uri -Headers @{ "User-Agent" = $UserAgent } -TimeoutSec 15
@@ -241,7 +323,36 @@ if ($Lookup -eq "true") {
             $message = "No MusicBrainz release matched this disc. Enter the details manually."
         }
     } catch {
-        $message = "MusicBrainz lookup failed: $($_.Exception.Message)"
+        $lookupError = $_.Exception.Message
+        $message = "MusicBrainz lookup failed: $lookupError"
+    }
+
+    $usedCdText = $false
+    if (-not $artist -and $cdTextArtist) {
+        $artist = $cdTextArtist
+        $usedCdText = $true
+    }
+    if (-not $title -and $cdTextTitle) {
+        $title = $cdTextTitle
+        $usedCdText = $true
+    }
+
+    if ($usedCdText) {
+        if ($source -eq "MusicBrainz") {
+            $source = "MusicBrainz + CD-Text"
+        } else {
+            $source = "CD-Text"
+        }
+
+        if (-not $discNumber) {
+            $message = "Read title and author from the disc's CD-Text."
+        }
+    } elseif ($source -eq "CD table of contents") {
+        if ($lookupError) {
+            $message = "MusicBrainz lookup failed ($lookupError), and no CD-Text metadata was found. Enter the details manually."
+        } else {
+            $message = "No MusicBrainz release or CD-Text metadata was found. Enter the details manually."
+        }
     }
 }
 

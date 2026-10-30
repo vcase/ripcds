@@ -12,6 +12,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub audio_root: Option<String>,
     #[serde(default)]
+    pub audio_roots: Vec<String>,
+    #[serde(default)]
     pub freaccmd_path: Option<String>,
     #[serde(default)]
     pub drive: Option<String>,
@@ -53,10 +55,19 @@ pub fn save(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
 }
 
 pub fn remember_book(app: &AppHandle, manifest: &crate::models::BookManifest) {
-    let settings = AppSettings {
-        audio_root: Some(manifest.audio_root.clone()),
-        freaccmd_path: Some(manifest.freaccmd_path.clone()),
-        drive: Some(manifest.drive.clone()),
-    };
+    let mut settings = load(app);
+
+    settings.audio_root = Some(manifest.audio_root.clone());
+    if !manifest.audio_root.trim().is_empty()
+        && !settings
+            .audio_roots
+            .iter()
+            .any(|root| root.eq_ignore_ascii_case(&manifest.audio_root))
+    {
+        settings.audio_roots.push(manifest.audio_root.clone());
+    }
+    settings.freaccmd_path = Some(manifest.freaccmd_path.clone());
+    settings.drive = Some(manifest.drive.clone());
+
     let _ = save(app, &settings);
 }

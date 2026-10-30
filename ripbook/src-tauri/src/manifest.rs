@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -49,21 +49,49 @@ pub fn reconcile(manifest: &mut BookManifest) -> bool {
     for disc in &mut manifest.discs {
         match disc.status {
             DiscStatus::Ripping => {
-                disc.status = DiscStatus::Pending;
+                disc.status = DiscStatus::Failed;
+                disc.files.clear();
+                disc.track_count = None;
+                disc.completed_at = None;
                 disc.error = Some(
-                    "Previous rip was interrupted. Insert this disc again and retry.".to_string(),
+                    "The previous rip was interrupted before it finished. Re-rip this disc."
+                        .to_string(),
                 );
                 changed = true;
             }
             DiscStatus::Done => {
                 if !disc_files_valid(&book_dir, disc) {
-                    disc.status = DiscStatus::Pending;
+                    disc.status = DiscStatus::Failed;
                     disc.files.clear();
                     disc.track_count = None;
                     disc.completed_at = None;
                     disc.error = Some(
                         "Some files for this disc are missing or empty. Re-rip it.".to_string(),
                     );
+                    changed = true;
+                } else if let Some(expected) = disc.expected_track_count
+                    && disc.files.len() < expected as usize
+                {
+                    let actual = disc.files.len();
+                    disc.status = DiscStatus::Failed;
+                    disc.files.clear();
+                    disc.track_count = None;
+                    disc.completed_at = None;
+                    disc.error = Some(format!(
+                        "Only {actual} of the expected {expected} tracks were installed. Re-rip this disc."
+                    ));
+                    changed = true;
+                } else if let Some(logged) = logged_track_count(&book_dir, disc.index)
+                    && disc.files.len() < logged as usize
+                {
+                    let actual = disc.files.len();
+                    disc.status = DiscStatus::Failed;
+                    disc.files.clear();
+                    disc.track_count = None;
+                    disc.completed_at = None;
+                    disc.error = Some(format!(
+                        "The rip log shows {logged} tracks, but only {actual} were installed. Re-rip this disc."
+                    ));
                     changed = true;
                 } else if disc.track_count != Some(disc.files.len() as u32) {
                     disc.track_count = Some(disc.files.len() as u32);
@@ -86,6 +114,38 @@ fn disc_files_valid(book_dir: &Path, disc: &DiscState) -> bool {
         let path = book_dir.join(name);
         path.is_file() && fs::metadata(&path).map(|m| m.len() > 1024).unwrap_or(false)
     })
+}
+
+fn logged_track_count(book_dir: &Path, disc_index: u32) -> Option<u32> {
+    let log = fs::read_to_string(book_dir.join(format!("rip_cd_{disc_index:02}.log"))).ok()?;
+    let mut tracks = BTreeSet::new();
+
+    for line in log.lines() {
+        if !line.contains("Processing file:") {
+            continue;
+        }
+
+        let Some(index) = line.find("Track ") else {
+            continue;
+        };
+        let digits: String = line[index + 6..]
+            .trim_start()
+            .chars()
+            .take_while(|character| character.is_ascii_digit())
+            .collect();
+
+        if let Ok(track) = digits.parse::<u32>()
+            && track > 0
+        {
+            tracks.insert(track);
+        }
+    }
+
+    if tracks.is_empty() {
+        None
+    } else {
+        Some(tracks.len() as u32)
+    }
 }
 
 pub fn create_or_open(request: &CreateBookRequest) -> Result<BookManifest, String> {
@@ -250,6 +310,21 @@ fn import_existing_files(manifest: &mut BookManifest) {
         };
 
         files.sort_by_key(|(track, _)| *track);
+
+        if let Some(expected) = disc.expected_track_count
+            && files.len() < expected as usize
+        {
+            disc.status = DiscStatus::Failed;
+            disc.files.clear();
+            disc.track_count = None;
+            disc.completed_at = None;
+            disc.error = Some(format!(
+                "Found only {} of the expected {expected} tracks on disk. Re-rip this disc.",
+                files.len()
+            ));
+            continue;
+        }
+
         disc.status = DiscStatus::Done;
         disc.files = files.into_iter().map(|(_, name)| name).collect();
         disc.track_count = Some(disc.files.len() as u32);
@@ -382,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_marks_missing_done_files_as_pending() {
+    fn reconcile_marks_missing_done_files_as_failed() {
         let (_root, book) = temp_book();
         let mut manifest = BookManifest::new(
             "Author",
@@ -399,8 +474,81 @@ mod tests {
         manifest.discs[0].track_count = Some(1);
 
         assert!(reconcile(&mut manifest));
-        assert_eq!(manifest.discs[0].status, DiscStatus::Pending);
+        assert_eq!(manifest.discs[0].status, DiscStatus::Failed);
         assert!(manifest.discs[0].files.is_empty());
+    }
+
+    #[test]
+    fn reconcile_marks_interrupted_ripping_as_failed() {
+        let (_root, book) = temp_book();
+        let mut manifest = BookManifest::new(
+            "Author",
+            "Book",
+            &book.to_string_lossy(),
+            &book.parent().unwrap().parent().unwrap().to_string_lossy(),
+            1,
+            1,
+            "0",
+            "freaccmd.exe",
+        );
+        manifest.discs[0].status = DiscStatus::Ripping;
+
+        assert!(reconcile(&mut manifest));
+        assert_eq!(manifest.discs[0].status, DiscStatus::Failed);
+        assert!(manifest.discs[0].error.is_some());
+    }
+
+    #[test]
+    fn reconcile_marks_incomplete_done_disc_as_failed() {
+        let (_root, book) = temp_book();
+        fs::write(book.join("cd01_t01.mp3"), vec![0u8; 2048]).unwrap();
+
+        let mut manifest = BookManifest::new(
+            "Author",
+            "Book",
+            &book.to_string_lossy(),
+            &book.parent().unwrap().parent().unwrap().to_string_lossy(),
+            1,
+            1,
+            "0",
+            "freaccmd.exe",
+        );
+        manifest.discs[0].status = DiscStatus::Done;
+        manifest.discs[0].expected_track_count = Some(2);
+        manifest.discs[0].files = vec!["cd01_t01.mp3".to_string()];
+        manifest.discs[0].track_count = Some(1);
+
+        assert!(reconcile(&mut manifest));
+        assert_eq!(manifest.discs[0].status, DiscStatus::Failed);
+        assert!(manifest.discs[0].files.is_empty());
+    }
+
+    #[test]
+    fn reconcile_uses_rip_log_to_detect_a_partial_done_disc() {
+        let (_root, book) = temp_book();
+        fs::write(book.join("cd01_t01.mp3"), vec![0u8; 2048]).unwrap();
+        fs::write(
+            book.join("rip_cd_01.log"),
+            "Processing file: Audio CD 0 - Track 1...done.\nProcessing file: Audio CD 0 - Track 2...done.\nProcessing file: Audio CD 0 - Track 3...done.\n",
+        )
+        .unwrap();
+
+        let mut manifest = BookManifest::new(
+            "Author",
+            "Book",
+            &book.to_string_lossy(),
+            &book.parent().unwrap().parent().unwrap().to_string_lossy(),
+            1,
+            1,
+            "0",
+            "freaccmd.exe",
+        );
+        manifest.discs[0].status = DiscStatus::Done;
+        manifest.discs[0].files = vec!["cd01_t01.mp3".to_string()];
+        manifest.discs[0].track_count = Some(1);
+
+        assert!(reconcile(&mut manifest));
+        assert_eq!(manifest.discs[0].status, DiscStatus::Failed);
     }
 
     #[test]
@@ -449,6 +597,48 @@ mod tests {
         assert_eq!(manifest.discs[0].status, DiscStatus::Done);
         assert_eq!(manifest.discs[0].track_count, Some(2));
         assert_eq!(manifest.discs[1].status, DiscStatus::Pending);
+    }
+
+    #[test]
+    fn create_book_does_not_import_incomplete_files_when_expected_count_is_known() {
+        let root = tempfile::tempdir().unwrap();
+        let book = root.path().join("Author").join("Book");
+        fs::create_dir_all(&book).unwrap();
+        fs::write(book.join("cd01_t01.mp3"), vec![0u8; 2048]).unwrap();
+
+        let mut manifest = BookManifest::new(
+            "Author",
+            "Book",
+            &book.to_string_lossy(),
+            &root.path().to_string_lossy(),
+            1,
+            1,
+            "D:",
+            "freaccmd.exe",
+        );
+        manifest.discs[0].expected_track_count = Some(3);
+        save_manifest(&manifest).unwrap();
+
+        let manifest = create_or_open(&CreateBookRequest {
+            author: "Author".to_string(),
+            title: "Book".to_string(),
+            first_disc: 1,
+            last_disc: 1,
+            audio_root: root.path().to_string_lossy().to_string(),
+            drive: "D:".to_string(),
+            freaccmd_path: "freaccmd.exe".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(manifest.discs[0].status, DiscStatus::Failed);
+        assert!(manifest.discs[0].files.is_empty());
+        assert!(
+            manifest.discs[0]
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("expected 3")
+        );
     }
 
     #[test]

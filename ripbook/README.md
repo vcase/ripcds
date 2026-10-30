@@ -7,12 +7,13 @@ resumable queue of `cdNN_tNN.mp3` files. It is the GUI successor to the
 ## What it does
 
 - Prompts for author, title, first disc, and last disc.
-- Can read the inserted disc's table of contents and look it up on MusicBrainz
-  to pre-fill author, title, and (when MusicBrainz knows the release) the total
-  number of discs. There is a **Read from disc** button next to Author, and
-  RipBook also tries this automatically when Create is pressed with a blank
-  author or title. Audio CDs themselves do not carry a “disc N of M” field, so
-  the disc range can still be entered or corrected manually.
+- Can read the inserted disc's table of contents, its CD-Text, and look up the
+  disc ID on MusicBrainz to pre-fill author, title, and (when MusicBrainz knows
+  the release) the total number of discs. There is a **Read from disc** button
+  next to Author, and RipBook also tries this automatically when Create is
+  pressed with a blank author or title. Audio CDs themselves do not carry a
+  “disc N of M” field, so the disc range can still be entered or corrected
+  manually.
 - Lets you update the number of discs in a book later, so a book started with
   the default single-disc range can be extended without re-ripping anything.
 - Creates `%USERPROFILE%\AudioBooks\<Author>\<Book>` (or another library folder).
@@ -36,6 +37,9 @@ resumable queue of `cdNN_tNN.mp3` files. It is the GUI successor to the
   (`--track` / `--timeout`) command-line syntaxes.
 - Saves a `rip_cdNN.log` next to each book.
 - Ejects the disc after a successful install.
+- When the Windows uninstaller's **Delete the application data** option is
+  selected, also removes RipBook manifests and rip logs from known library
+  roots. Ripped audio files are left in place.
 
 RipBook does **not** write ID3 tags or playlists. The normalized filenames are
 the ordering mechanism, just like the original batch script.
@@ -141,11 +145,14 @@ Disc states are `pending`, `ripping`, `done`, and `failed`.
 
 On load, RipBook:
 
-- changes an interrupted `ripping` disc back to `pending` and clears the stale
-  work folder on the next attempt;
-- verifies every `done` disc's files exist and are non-empty;
+- changes an interrupted `ripping` disc to `failed` so partial files cannot be
+  mistaken for a completed disc, and clears the stale work folder on the next
+  attempt;
+- verifies every `done` disc's files exist, are non-empty, and meet the expected
+  track count recorded from the disc TOC;
 - keeps `failed` discs for an explicit retry;
-- imports existing `cdNN_tNN.*` files for discs that are still pending.
+- imports existing `cdNN_tNN.*` files for discs that are still pending, but not
+  when the disc has a known expected track count that the files do not meet.
 
 Resume is **per disc**, not per track. If the app stops in the middle of disc 4,
 it re-rips disc 4. This keeps the implementation simple and avoids relying on
@@ -161,9 +168,8 @@ They are convenience defaults only; each book's manifest remains authoritative.
 - Audio CDs do not contain a standard total-disc-count field. RipBook can
   suggest the count from a MusicBrainz match, but otherwise the user must enter
   the range up front; it can be extended later from the book screen.
-- Metadata pre-fill depends on an internet connection and a matching MusicBrainz
-  release. CD-Text is not read separately, and unmatched discs must be entered
-  manually.
+- Metadata pre-fill depends on a matching MusicBrainz release or CD-Text on the
+  disc. Discs with neither must be entered manually.
 - The drive selector uses the drive letter reported by Windows. It refreshes on
   window focus and with the Refresh button; a drive connected while RipBook is
   running appears after one of those refreshes.
@@ -205,6 +211,8 @@ src-tauri/src/powershell.rs embedded PowerShell script runner
 src-tauri/src/settings.rs last-used library/drive/fre:ac path
 src-tauri/src/models.rs   shared data types
 src-tauri/resources/freac optional bundled fre:ac payload
+src-tauri/resources/purge-installer-data.ps1 uninstall-time manifest cleanup
+src-tauri/windows/nsis-hooks.nsh NSIS installer/uninstaller hooks
 scripts/fetch-freac.ps1  downloads the portable fre:ac Windows build
 ../.github/workflows/    Windows NSIS build (repository root)
 ```

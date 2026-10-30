@@ -17,6 +17,8 @@ pub struct DiscState {
     #[serde(default)]
     pub track_count: Option<u32>,
     #[serde(default)]
+    pub expected_track_count: Option<u32>,
+    #[serde(default)]
     pub files: Vec<String>,
     #[serde(default)]
     pub error: Option<String>,
@@ -30,6 +32,7 @@ impl DiscState {
             index,
             status: DiscStatus::Pending,
             track_count: None,
+            expected_track_count: None,
             files: Vec::new(),
             error: None,
             completed_at: None,

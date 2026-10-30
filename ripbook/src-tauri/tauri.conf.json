@@ -29,11 +29,13 @@
     "shortDescription": "Resumable audiobook CD ripper",
     "longDescription": "Rip multi-disc audiobooks with fre:ac, track disc completion, and resume where you left off.",
     "resources": [
-      "resources/freac/**/*"
+      "resources/freac/**/*",
+      "resources/purge-installer-data.ps1"
     ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "windows/nsis-hooks.nsh"
       }
     },
     "icon": [

@@ -319,6 +319,7 @@ async fn rip_disc_inner(
         disc.error = None;
         disc.files.clear();
         disc.track_count = None;
+        disc.expected_track_count = None;
         disc.completed_at = None;
     }
 
@@ -345,6 +346,19 @@ async fn rip_disc_inner(
         .ok()
         .map(|info| info.track_count)
         .filter(|count| *count > 0);
+
+    if let Some(total) = track_total {
+        if let Some(disc) = manifest
+            .discs
+            .iter_mut()
+            .find(|disc| disc.index == request.disc_index)
+        {
+            disc.expected_track_count = Some(total);
+        }
+        manifest.updated_at = manifest::now_millis();
+        manifest::save_manifest(&manifest)?;
+        emit_manifest(app, &manifest);
+    }
 
     let log_path = book_dir.join(format!("rip_cd_{:02}.log", request.disc_index));
     let log_file = OpenOptions::new()
@@ -457,6 +471,20 @@ async fn rip_disc_inner(
 
     let files = normalize_and_install(&book_dir, request.disc_index, &wip_dir)?;
     let track_count = files.len() as u32;
+
+    let expected_track_count = manifest
+        .discs
+        .iter()
+        .find(|disc| disc.index == request.disc_index)
+        .and_then(|disc| disc.expected_track_count);
+
+    if let Some(expected) = expected_track_count
+        && track_count < expected
+    {
+        return Err(format!(
+            "freaccmd produced only {track_count} of the expected {expected} tracks. The disc was not marked complete; re-rip it."
+        ));
+    }
 
     {
         let disc = manifest

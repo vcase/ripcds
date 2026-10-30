@@ -4,6 +4,7 @@ export interface DiscState {
   index: number;
   status: DiscStatus;
   trackCount?: number | null;
+  expectedTrackCount?: number | null;
   files: string[];
   error?: string | null;
   completedAt?: number | null;
