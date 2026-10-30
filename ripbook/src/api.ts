@@ -5,7 +5,10 @@ import type {
   BookManifest,
   BookSummary,
   CreateBookRequest,
+  DiscInfo,
+  DriveInfo,
   FreacInfo,
+  FreacInstallResult,
   RipRequest,
 } from "./types";
 
@@ -16,8 +19,15 @@ export const api = {
     invoke<BookManifest>("create_book", { request }),
   loadBook: (bookDir: string) =>
     invoke<BookManifest>("load_book", { bookDir }),
+  setLastDisc: (bookDir: string, lastDisc: number) =>
+    invoke<BookManifest>("set_last_disc", { bookDir, lastDisc }),
+  listDrives: () => invoke<DriveInfo[]>("list_drives"),
+  lookupDiscMetadata: (drive: string) =>
+    invoke<DiscInfo>("lookup_disc_metadata", { drive }),
   probeFreaccmd: (path: string) =>
     invoke<FreacInfo>("probe_freaccmd", { path }),
+  installFreac: (version: string | null) =>
+    invoke<FreacInstallResult>("install_freac", { version }),
   ripDisc: (request: RipRequest) =>
     invoke<BookManifest>("rip_disc", { request }),
   cancelRip: () => invoke<void>("cancel_rip"),

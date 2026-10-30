@@ -10,11 +10,26 @@ import type {
   BookForm,
   BookManifest,
   BookSummary,
+  DriveInfo,
   FreacInfo,
   LogPayload,
   StatePayload,
 } from "./types";
 import "./App.css";
+
+function pickDrive(drives: DriveInfo[], preferred: string): string {
+  const value = preferred.trim();
+  const match =
+    drives.find(
+      (drive) =>
+        drive.letter.toUpperCase() === value.toUpperCase() ||
+        drive.letter.replace(/:$/, "").toUpperCase() ===
+          value.replace(/:$/, "").toUpperCase() ||
+        String(drive.index) === value,
+    ) ?? drives[0];
+
+  return match?.letter ?? (value || "0");
+}
 
 function formatError(error: unknown): string {
   if (typeof error === "string") return error;
@@ -50,10 +65,13 @@ export default function App() {
   const [audioRoot, setAudioRoot] = useState("");
   const [drive, setDrive] = useState("0");
   const [freacPath, setFreacPath] = useState("");
+  const [freacVersion, setFreacVersion] = useState("");
   const [probe, setProbe] = useState<FreacInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [busyDisc, setBusyDisc] = useState<number | null>(null);
+  const [metadataBusy, setMetadataBusy] = useState(false);
+  const [installingFreac, setInstallingFreac] = useState(false);
   const [logLines, setLogLines] = useState<string[]>([]);
   const [ripState, setRipState] = useState<StatePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +80,26 @@ export default function App() {
   const refreshBooks = async (root = audioRoot) => {
     try {
       setBooks(await api.listBooks(root));
+    } catch (caught) {
+      setError(formatError(caught));
+    }
+  };
+
+  const refreshDrives = async (showNotice = false) => {
+    try {
+      const drives = await api.listDrives();
+      setInfo((current) => (current ? { ...current, drives } : current));
+      setDrive((current) => pickDrive(drives, current));
+
+      if (showNotice) {
+        setNotice(
+          drives.length === 0
+            ? "No optical drive detected yet. Add or power on a drive, then refresh again."
+            : `${drives.length} optical drive${
+                drives.length === 1 ? "" : "s"
+              } detected.`,
+        );
+      }
     } catch (caught) {
       setError(formatError(caught));
     }
@@ -91,11 +129,7 @@ export default function App() {
         setInfo(appInfo);
         setAudioRoot(appInfo.defaultAudioRoot);
         setFreacPath(appInfo.defaultFreaccmdPath);
-        setDrive(
-          appInfo.defaultDrive ||
-            appInfo.drives[0]?.index.toString() ||
-            "0",
-        );
+        setDrive(pickDrive(appInfo.drives, appInfo.defaultDrive));
 
         const [library, tool] = await Promise.all([
           api.listBooks(appInfo.defaultAudioRoot),
@@ -114,6 +148,15 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      void refreshDrives();
+    };
+
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
   }, []);
 
   useEffect(() => {
@@ -152,7 +195,7 @@ export default function App() {
 
   useEffect(() => {
     if (!manifest) return;
-    setDrive(manifest.drive);
+    setDrive(info ? pickDrive(info.drives, manifest.drive) : manifest.drive);
     setFreacPath(manifest.freaccmdPath);
   }, [manifest?.bookDir]);
 
@@ -194,7 +237,7 @@ export default function App() {
       setNotice(
         created.discs.some((disc) => disc.status === "done")
           ? "Book loaded. Existing files were imported where possible."
-          : "Book ready. Insert the first disc when you are ready.",
+          : `Book ready. Insert disc ${created.firstDisc} when you are ready.`,
       );
       await refreshBooks(created.audioRoot);
     } catch (caught) {
@@ -217,9 +260,87 @@ export default function App() {
       applyProbe(await api.probeFreaccmd(loaded.freaccmdPath));
       setNotice(
         loaded.discs.every((disc) => disc.status === "done")
-          ? "Book loaded. All discs are complete."
+          ? "Book loaded. All discs in this book are complete; add more discs if the set has more."
           : "Book loaded. RipBook will continue with the next pending disc.",
       );
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleLookupDisc = async () => {
+    if (metadataBusy) return;
+
+    if (!info || info.drives.length === 0) {
+      setError(
+        "No optical drive detected. Connect a drive and insert a disc, then refresh the drive list.",
+      );
+      return;
+    }
+
+    setMetadataBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const disc = await api.lookupDiscMetadata(drive);
+      const patch: Partial<BookForm> = {};
+
+      if (disc.artist) patch.author = disc.artist;
+      if (disc.title) patch.title = disc.title;
+      if (disc.discCount && disc.discCount > 0) {
+        patch.lastDisc = form.firstDisc + disc.discCount - 1;
+      }
+
+      if (Object.keys(patch).length > 0) {
+        setForm((current) => ({ ...current, ...patch }));
+      }
+
+      const tracks = `${disc.trackCount} audio track${
+        disc.trackCount === 1 ? "" : "s"
+      }`;
+      setNotice(`Found ${tracks}. ${disc.message}`);
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      setMetadataBusy(false);
+    }
+  };
+
+  const handleInstallFreac = async () => {
+    if (installingFreac) return;
+
+    setInstallingFreac(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.installFreac(freacVersion.trim() || null);
+      setFreacPath(result.path);
+      applyProbe(await api.probeFreaccmd(result.path));
+      setNotice(result.message);
+    } catch (caught) {
+      setError(formatError(caught));
+    } finally {
+      setInstallingFreac(false);
+    }
+  };
+
+  const handleSetLastDisc = async (lastDisc: number) => {
+    if (!manifest || busy) return;
+
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const updated = await api.setLastDisc(manifest.bookDir, lastDisc);
+      setManifest(updated);
+      setNotice(
+        `Book now contains ${updated.discs.length} disc${
+          updated.discs.length === 1 ? "" : "s"
+        }.`,
+      );
+      await refreshBooks(updated.audioRoot);
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -234,7 +355,7 @@ export default function App() {
     if (disc?.status === "done") {
       try {
         const confirmed = await confirm(
-          `Re-rip disc ${discIndex}? Its existing files will be replaced.`,
+          `Re-rip disc ${discIndex}? Insert disc ${discIndex}; its existing files will be replaced.`,
           { title: "Re-rip disc", kind: "warning" },
         );
         if (!confirmed) return;
@@ -263,8 +384,13 @@ export default function App() {
         freaccmdPath: freacPath,
       });
       setManifest(updated);
+      const nextPending = updated.discs.find(
+        (entry) => entry.status === "pending" || entry.status === "failed",
+      );
       setNotice(
-        `Disc ${discIndex} complete. Insert the next disc or review the log.`,
+        nextPending
+          ? `Disc ${discIndex} complete. Insert disc ${nextPending.index} next.`
+          : `Disc ${discIndex} complete. All discs in this book are complete. If the set has more discs, add them.`,
       );
       await refreshBooks(updated.audioRoot);
     } catch (caught) {
@@ -403,6 +529,13 @@ export default function App() {
             }`}
           />
           {headerStatus}
+          <button
+            type="button"
+            className="button button--ghost button--small"
+            onClick={() => void refreshDrives(true)}
+          >
+            Refresh drives
+          </button>
         </div>
       </header>
 
@@ -442,14 +575,21 @@ export default function App() {
             drive={drive}
             drives={info?.drives ?? []}
             onDriveChange={setDrive}
+            onRefreshDrives={() => void refreshDrives(true)}
             freacPath={freacPath}
             onFreacPathChange={setFreacPath}
+            onBrowseFreac={handleBrowseFreac}
+            freacVersion={freacVersion}
+            onFreacVersionChange={setFreacVersion}
+            onInstallFreac={handleInstallFreac}
+            installingFreac={installingFreac}
             probe={probe}
             onProbe={handleProbe}
             onRip={handleRip}
             onCancel={handleCancel}
             onEject={handleEject}
             onOpenFolder={handleOpenFolder}
+            onSetLastDisc={handleSetLastDisc}
             onBack={handleBack}
           />
         ) : (
@@ -461,8 +601,15 @@ export default function App() {
               onAudioRootChange={setAudioRoot}
               drive={drive}
               onDriveChange={setDrive}
+              onRefreshDrives={() => void refreshDrives(true)}
+              onLookupDisc={handleLookupDisc}
+              metadataBusy={metadataBusy}
               freacPath={freacPath}
               onFreacPathChange={setFreacPath}
+              freacVersion={freacVersion}
+              onFreacVersionChange={setFreacVersion}
+              onInstallFreac={handleInstallFreac}
+              installingFreac={installingFreac}
               probe={probe}
               info={info}
               busy={busy}

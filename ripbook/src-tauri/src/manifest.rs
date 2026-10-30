@@ -163,6 +163,64 @@ pub fn create_or_open(request: &CreateBookRequest) -> Result<BookManifest, Strin
     Ok(manifest)
 }
 
+pub fn set_last_disc(manifest: &mut BookManifest, last_disc: u32) -> Result<bool, String> {
+    if last_disc == 0 {
+        return Err("The number of discs must be at least 1.".to_string());
+    }
+    if last_disc > 999 {
+        return Err("Disc numbers are limited to 999.".to_string());
+    }
+    if last_disc < manifest.first_disc {
+        return Err(format!(
+            "The last disc cannot be before the first disc ({}).",
+            manifest.first_disc
+        ));
+    }
+
+    let protected = manifest
+        .discs
+        .iter()
+        .filter(|disc| disc.status != DiscStatus::Pending)
+        .map(|disc| disc.index)
+        .max()
+        .unwrap_or(manifest.first_disc.saturating_sub(1));
+
+    if last_disc < protected {
+        return Err(format!(
+            "Disc {protected} already has saved files or progress. Re-rip or keep that disc before reducing the book to {last_disc} discs."
+        ));
+    }
+
+    let mut changed = manifest.last_disc != last_disc;
+
+    manifest.last_disc = last_disc;
+    let before = manifest.discs.len();
+    manifest
+        .discs
+        .retain(|disc| disc.index >= manifest.first_disc && disc.index <= last_disc);
+
+    if manifest.discs.len() != before {
+        changed = true;
+    }
+
+    for index in manifest.first_disc..=last_disc {
+        if !manifest.discs.iter().any(|disc| disc.index == index) {
+            manifest.discs.push(DiscState::pending(index));
+            changed = true;
+        }
+    }
+
+    manifest.discs.sort_by_key(|disc| disc.index);
+
+    if changed {
+        import_existing_files(manifest);
+        reconcile(manifest);
+        manifest.updated_at = now_millis();
+    }
+
+    Ok(changed)
+}
+
 fn import_existing_files(manifest: &mut BookManifest) {
     let book_dir = PathBuf::from(&manifest.book_dir);
     let entries = match fs::read_dir(&book_dir) {
@@ -446,5 +504,58 @@ mod tests {
                 .all(|disc| disc.status == DiscStatus::Pending)
         );
         assert!(manifest.discs[0].completed_at.is_none());
+    }
+
+    #[test]
+    fn set_last_disc_adds_pending_discs() {
+        let (_root, book) = temp_book();
+        let mut manifest = BookManifest::new(
+            "Author",
+            "Book",
+            &book.to_string_lossy(),
+            &book.parent().unwrap().parent().unwrap().to_string_lossy(),
+            1,
+            1,
+            "0",
+            "freaccmd.exe",
+        );
+
+        assert!(set_last_disc(&mut manifest, 3).unwrap());
+        assert_eq!(manifest.last_disc, 3);
+        assert_eq!(manifest.discs.len(), 3);
+        assert!(
+            manifest
+                .discs
+                .iter()
+                .all(|disc| disc.status == DiscStatus::Pending)
+        );
+    }
+
+    #[test]
+    fn set_last_disc_removes_only_pending_discs() {
+        let (_root, book) = temp_book();
+        let mut manifest = BookManifest::new(
+            "Author",
+            "Book",
+            &book.to_string_lossy(),
+            &book.parent().unwrap().parent().unwrap().to_string_lossy(),
+            1,
+            4,
+            "0",
+            "freaccmd.exe",
+        );
+        manifest.discs[0].status = DiscStatus::Done;
+        manifest.discs[0].files = vec!["cd01_t01.mp3".to_string()];
+        manifest.discs[1].status = DiscStatus::Done;
+        manifest.discs[1].files = vec!["cd02_t01.mp3".to_string()];
+        fs::write(book.join("cd01_t01.mp3"), vec![0u8; 2048]).unwrap();
+        fs::write(book.join("cd02_t01.mp3"), vec![0u8; 2048]).unwrap();
+
+        assert!(set_last_disc(&mut manifest, 2).unwrap());
+        assert_eq!(manifest.discs.len(), 2);
+        assert_eq!(manifest.discs[0].status, DiscStatus::Done);
+
+        let error = set_last_disc(&mut manifest, 1).unwrap_err();
+        assert!(error.contains("already has saved files"));
     }
 }

@@ -158,4 +158,34 @@ pub struct StatePayload {
     pub disc: u32,
     pub stage: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_total: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscInfo {
+    pub drive: String,
+    pub track_count: u32,
+    pub first_track: u32,
+    pub last_track: u32,
+    pub disc_id: Option<String>,
+    pub artist: Option<String>,
+    pub title: Option<String>,
+    pub disc_number: Option<u32>,
+    pub disc_count: Option<u32>,
+    pub source: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FreacInstallResult {
+    pub version: String,
+    pub path: String,
+    pub message: String,
 }

@@ -7,6 +7,12 @@ resumable queue of `cdNN_tNN.mp3` files. It is the GUI successor to the
 ## What it does
 
 - Prompts for author, title, first disc, and last disc.
+- Can read the inserted disc's table of contents and look it up on MusicBrainz
+  to pre-fill author, title, and (when MusicBrainz knows the release) the total
+  number of discs. Audio CDs themselves do not carry a “disc N of M” field, so
+  the disc range can still be entered or corrected manually.
+- Lets you update the number of discs in a book later, so a book started with
+  the default single-disc range can be extended without re-ripping anything.
 - Creates `%USERPROFILE%\AudioBooks\<Author>\<Book>` (or another library folder).
 - Rips one inserted disc at a time with `freaccmd.exe`.
 - Stores each disc in a temporary `wip_cd_NN` folder, renames the tracks to
@@ -17,10 +23,16 @@ resumable queue of `cdNN_tNN.mp3` files. It is the GUI successor to the
 - Verifies completed discs on load and marks missing/empty files as pending.
 - Imports existing `cdNN_tNN.*` files, so books ripped with the old batch script
   can be opened and continued.
+- Shows separate book progress and current-disc progress while a rip is running.
+- Remembers the last library folder, drive, and fre:ac path.
+- Refreshes the optical-drive list on window focus or with the Refresh button,
+  so a drive connected after startup can be used without restarting RipBook.
+- Lets you choose a target disc (including a completed one) before re-ripping.
+- Can download the latest fre:ac release, or a specific version, from the
+  official fre:ac GitHub releases page into RipBook's app-data folder.
 - Detects both the fre:ac 1.0 (`-track` / `-t <timeout>`) and fre:ac 1.1+
   (`--track` / `--timeout`) command-line syntaxes.
 - Saves a `rip_cdNN.log` next to each book.
-- Remembers the last library folder, drive, and fre:ac path.
 - Ejects the disc after a successful install.
 
 RipBook does **not** write ID3 tags or playlists. The normalized filenames are
@@ -34,8 +46,9 @@ For running the Windows build:
 - An optical drive that can read audio CDs.
 - `freaccmd.exe` from fre:ac. Release builds produced by the GitHub Actions
   workflow bundle the fre:ac 1.1.7 portable Windows build, so the installer is
-  self-contained. For local development, install fre:ac or point RipBook at a
-  portable copy.
+  self-contained. The app can also download the latest release (or a specific
+  version) from the official fre:ac GitHub releases; for local development you
+  can install fre:ac or point RipBook at a portable copy.
 
 For building:
 
@@ -65,6 +78,7 @@ cd src-tauri && cargo test
 ```
 
 The macOS development build will show a warning that CD ripping requires
+Windows. Disc TOC/metadata reading and the in-app fre:ac downloader also require
 Windows. A fake ripper is not included; the UI can still be opened and the
 manifest/import/resume paths can be exercised with test folders.
 
@@ -142,14 +156,23 @@ They are convenience defaults only; each book's manifest remains authoritative.
 ## Limitations
 
 - Resume is per disc, not per track.
-- The drive selector uses Windows' optical-drive enumeration order. On a
-  multi-drive machine, verify the drive letter shown next to the selected index.
+- Audio CDs do not contain a standard total-disc-count field. RipBook can
+  suggest the count from a MusicBrainz match, but otherwise the user must enter
+  the range up front; it can be extended later from the book screen.
+- Metadata pre-fill depends on an internet connection and a matching MusicBrainz
+  release. CD-Text is not read separately, and unmatched discs must be entered
+  manually.
+- The drive selector uses the drive letter reported by Windows. It refreshes on
+  window focus and with the Refresh button; a drive connected while RipBook is
+  running appears after one of those refreshes.
 - Files are encoded with fre:ac's default LAME MP3 encoder. There is no bitrate
   or output-format picker yet.
 - RipBook does not write ID3 tags or playlists. It relies on the `cdNN_tNN`
   filenames for ordering.
 - There is no TOC fingerprint yet. The app trusts the user to insert the disc
   shown in the UI.
+- The in-app fre:ac downloader targets the official Windows x64/ARM64 portable
+  ZIP releases. It does not install the fre:ac GUI or use a package manager.
 - A hard crash or forced quit during a rip may leave a `freaccmd.exe` process
   running; close it before retrying that disc.
 
@@ -172,8 +195,11 @@ to other people:
 ```text
 src/                     React UI
 src-tauri/src/commands.rs Tauri commands, ripping, cancellation, eject
+src-tauri/src/disc.rs     CD TOC reader and MusicBrainz metadata lookup
 src-tauri/src/freac.rs    fre:ac discovery, version detection, argument builder
+src-tauri/src/freac_install.rs downloads/installs fre:ac releases
 src-tauri/src/manifest.rs manifest, atomic writes, resume/import logic
+src-tauri/src/powershell.rs embedded PowerShell script runner
 src-tauri/src/settings.rs last-used library/drive/fre:ac path
 src-tauri/src/models.rs   shared data types
 src-tauri/resources/freac optional bundled fre:ac payload

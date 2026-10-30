@@ -172,6 +172,8 @@ h2 {
 .app-status {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   color: var(--muted);
   font-size: 0.8rem;
@@ -359,6 +361,27 @@ select:focus {
 .input-row input {
   flex: 1;
   min-width: 0;
+}
+
+.input-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.install-row {
+  margin-top: 2px;
+}
+
+.metadata-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.metadata-row .form-hint {
+  flex: 1;
+  min-width: 220px;
 }
 
 .form-actions {
@@ -622,6 +645,85 @@ select:focus {
   border-radius: inherit;
   background: linear-gradient(90deg, #0f766e, #14b8a6);
   transition: width 300ms ease;
+}
+
+.disc-progress {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+
+.disc-progress-topline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.disc-progress-topline strong {
+  color: var(--text);
+}
+
+.disc-progress-percent {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.progress-track--disc {
+  height: 8px;
+}
+
+.progress-track--indeterminate .progress-fill {
+  width: 35%;
+  animation: progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.disc-progress .rip-state {
+  margin-top: 7px;
+}
+
+.target-select {
+  width: auto;
+  min-width: 170px;
+  max-width: 230px;
+}
+
+.disc-count-editor {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+
+.disc-count-editor label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.disc-count-editor label span {
+  white-space: nowrap;
+}
+
+.disc-count-editor input {
+  width: 82px;
 }
 
 .next-step {

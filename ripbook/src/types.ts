@@ -82,6 +82,29 @@ export interface StatePayload {
   disc: number;
   stage: "starting" | "ripping" | "installing" | "done" | "failed" | string;
   message: string;
+  track?: number;
+  trackTotal?: number;
+  percent?: number;
+}
+
+export interface DiscInfo {
+  drive: string;
+  trackCount: number;
+  firstTrack: number;
+  lastTrack: number;
+  discId?: string | null;
+  artist?: string | null;
+  title?: string | null;
+  discNumber?: number | null;
+  discCount?: number | null;
+  source: string;
+  message: string;
+}
+
+export interface FreacInstallResult {
+  version: string;
+  path: string;
+  message: string;
 }
 
 export interface BookForm {

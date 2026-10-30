@@ -1,7 +1,11 @@
 mod commands;
+mod disc;
 mod freac;
+mod freac_install;
 mod manifest;
 mod models;
+#[cfg(windows)]
+mod powershell;
 mod settings;
 
 use tauri::Manager;
@@ -22,7 +26,11 @@ pub fn run() {
             commands::list_books,
             commands::create_book,
             commands::load_book,
+            commands::set_last_disc,
+            commands::list_drives,
+            commands::lookup_disc_metadata,
             commands::probe_freaccmd,
+            commands::install_freac,
             commands::rip_disc,
             commands::cancel_rip,
             commands::eject_drive,

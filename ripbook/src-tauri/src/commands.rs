@@ -4,17 +4,20 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncBufReadExt, AsyncRead};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+use crate::disc;
 use crate::freac;
+use crate::freac_install;
 use crate::manifest;
 use crate::models::{
-    AppInfo, BookManifest, BookSummary, CreateBookRequest, DiscStatus, DriveInfo, FreacInfo,
-    LogPayload, RipRequest, StatePayload,
+    AppInfo, BookManifest, BookSummary, CreateBookRequest, DiscInfo, DiscStatus, DriveInfo,
+    FreacInfo, FreacInstallResult, LogPayload, RipRequest, StatePayload,
 };
 use crate::settings;
 
@@ -44,11 +47,7 @@ pub fn get_app_info(app: AppHandle) -> Result<AppInfo, String> {
         .filter(|value| Path::new(value).is_file())
         .unwrap_or_else(|| freac::default_freaccmd_path(&app));
 
-    let default_drive = saved
-        .drive
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "0".to_string());
-
+    let default_drive = normalize_drive(&drives, saved.drive.as_deref());
     let freaccmd_found = Path::new(&default_freaccmd_path).is_file();
 
     Ok(AppInfo {
@@ -59,6 +58,45 @@ pub fn get_app_info(app: AppHandle) -> Result<AppInfo, String> {
         freaccmd_found,
         drives,
     })
+}
+
+#[tauri::command]
+pub fn list_drives() -> Result<Vec<DriveInfo>, String> {
+    detect_drives()
+}
+
+#[tauri::command]
+pub async fn lookup_disc_metadata(drive: String) -> Result<DiscInfo, String> {
+    disc::lookup_metadata(&drive).await
+}
+
+#[tauri::command]
+pub async fn install_freac(
+    app: AppHandle,
+    version: Option<String>,
+) -> Result<FreacInstallResult, String> {
+    freac_install::install(&app, version).await
+}
+
+#[tauri::command]
+pub fn set_last_disc(
+    app: AppHandle,
+    book_dir: String,
+    last_disc: u32,
+) -> Result<BookManifest, String> {
+    let mut manifest = manifest::load_manifest(&book_dir)?;
+
+    if manifest.book_dir != book_dir {
+        manifest.book_dir = book_dir.clone();
+    }
+
+    if manifest::set_last_disc(&mut manifest, last_disc)? {
+        manifest::save_manifest(&manifest)?;
+        settings::remember_book(&app, &manifest);
+        emit_manifest(&app, &manifest);
+    }
+
+    Ok(manifest)
 }
 
 #[tauri::command]
@@ -95,6 +133,17 @@ pub fn load_book(app: AppHandle, book_dir: String) -> Result<BookManifest, Strin
     }
 
     if manifest::reconcile(&mut manifest) {
+        changed = true;
+    }
+
+    let saved = settings::load(&app);
+    if !Path::new(&manifest.freaccmd_path).is_file()
+        && let Some(saved_path) = saved
+            .freaccmd_path
+            .as_deref()
+            .filter(|path| Path::new(path).is_file())
+    {
+        manifest.freaccmd_path = saved_path.to_string();
         changed = true;
     }
 
@@ -216,11 +265,12 @@ async fn rip_disc_inner(
         manifest::save_manifest(&manifest)?;
     }
 
-    let drive = if request.drive.trim().is_empty() {
+    let drive_selection = if request.drive.trim().is_empty() {
         manifest.drive.clone()
     } else {
         request.drive.trim().to_string()
     };
+    let (drive_index, drive_letter) = resolve_drive(&drive_selection)?;
 
     let freac_path_string = if !request.freaccmd_path.trim().is_empty() {
         request.freaccmd_path.trim().to_string()
@@ -256,7 +306,7 @@ async fn rip_disc_inner(
         ));
     }
 
-    manifest.drive = drive.clone();
+    manifest.drive = drive_letter.clone();
     manifest.freaccmd_path = freac_path_string.clone();
 
     {
@@ -290,6 +340,12 @@ async fn rip_disc_inner(
     }
     fs::create_dir_all(&wip_dir).map_err(|e| format!("Could not create the work folder: {e}"))?;
 
+    let track_total = disc::read_toc(&drive_letter)
+        .await
+        .ok()
+        .map(|info| info.track_count)
+        .filter(|count| *count > 0);
+
     let log_path = book_dir.join(format!("rip_cd_{:02}.log", request.disc_index));
     let log_file = OpenOptions::new()
         .create(true)
@@ -298,7 +354,7 @@ async fn rip_disc_inner(
         .open(&log_path)
         .map_err(|e| format!("Could not create the rip log: {e}"))?;
 
-    let args = freac::build_rip_args(&probe.version, &drive, &wip_dir);
+    let args = freac::build_rip_args(&probe.version, &drive_index.to_string(), &wip_dir);
     let mut command = Command::new(&freac_path);
     if let Some(parent) = freac_path.parent() {
         command.current_dir(parent);
@@ -312,11 +368,18 @@ async fn rip_disc_inner(
     #[cfg(windows)]
     command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
 
-    emit_state(
+    let rip_message = match track_total {
+        Some(total) => format!("Ripping up to {total} tracks with fre:ac..."),
+        None => "Ripping with fre:ac. This can take a while.".to_string(),
+    };
+    emit_state_progress(
         app,
         request.disc_index,
         "ripping",
-        "Ripping with fre:ac. This can take a while.",
+        &rip_message,
+        None,
+        track_total,
+        track_total.map(|_| 0),
     );
 
     let mut child = command
@@ -340,20 +403,33 @@ async fn rip_disc_inner(
         log.clone(),
     ));
 
+    let progress_cancel = CancellationToken::new();
+    let progress_task = tokio::spawn(watch_rip_progress(
+        app.clone(),
+        request.disc_index,
+        wip_dir.clone(),
+        track_total,
+        progress_cancel.clone(),
+    ));
+
     let status = tokio::select! {
         _ = token.cancelled() => {
+            progress_cancel.cancel();
             let _ = child.kill().await;
             let _ = child.wait().await;
             let _ = stdout_task.await;
             let _ = stderr_task.await;
+            let _ = progress_task.await;
             return Err("Rip cancelled.".to_string());
         }
         result = child.wait() => result,
     }
     .map_err(|e| format!("Could not wait for freaccmd: {e}"))?;
 
+    progress_cancel.cancel();
     let _ = stdout_task.await;
     let _ = stderr_task.await;
+    let _ = progress_task.await;
 
     if !status.success() {
         let code = status
@@ -369,11 +445,14 @@ async fn rip_disc_inner(
         return Err("Rip cancelled.".to_string());
     }
 
-    emit_state(
+    emit_state_progress(
         app,
         request.disc_index,
         "installing",
         "Normalizing track names and installing files...",
+        track_total,
+        track_total,
+        Some(100),
     );
 
     let files = normalize_and_install(&book_dir, request.disc_index, &wip_dir)?;
@@ -395,15 +474,18 @@ async fn rip_disc_inner(
     manifest.updated_at = manifest::now_millis();
     manifest::save_manifest(&manifest)?;
     emit_manifest(app, &manifest);
-    emit_state(
+    emit_state_progress(
         app,
         request.disc_index,
         "done",
         &format!("Installed {track_count} tracks."),
+        Some(track_count),
+        Some(track_count),
+        Some(100),
     );
 
-    if !drive.is_empty()
-        && let Err(error) = eject_drive_inner(&drive).await
+    if !drive_letter.is_empty()
+        && let Err(error) = eject_drive_inner(&drive_letter).await
     {
         if let Some(disc) = manifest
             .discs
@@ -449,6 +531,72 @@ fn mark_failed(app: &AppHandle, request: &RipRequest, error: &str) {
     let _ = manifest::save_manifest(&manifest);
     emit_manifest(app, &manifest);
     emit_state(app, request.disc_index, "failed", error);
+}
+
+async fn watch_rip_progress(
+    app: AppHandle,
+    disc: u32,
+    wip_dir: PathBuf,
+    track_total: Option<u32>,
+    cancel: CancellationToken,
+) {
+    let mut last_count = 0u32;
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tokio::time::sleep(Duration::from_millis(600)) => {}
+        }
+
+        let count = count_audio_files(&wip_dir);
+        if count == 0 || count == last_count {
+            continue;
+        }
+        last_count = count;
+
+        let (message, percent) = match track_total {
+            Some(total) if total > 0 => {
+                let done = count.min(total);
+                let percent = (done * 100 / total).min(99);
+                (format!("Ripped {done} of {total} tracks..."), Some(percent))
+            }
+            _ => (
+                format!(
+                    "Ripped {count} track{} so far...",
+                    if count == 1 { "" } else { "s" }
+                ),
+                None,
+            ),
+        };
+
+        emit_state_progress(
+            &app,
+            disc,
+            "ripping",
+            &message,
+            Some(count),
+            track_total,
+            percent,
+        );
+    }
+}
+
+fn count_audio_files(dir: &Path) -> u32 {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    let path = entry.path();
+                    path.is_file()
+                        && is_audio_file(&path)
+                        && fs::metadata(&path)
+                            .map(|metadata| metadata.len() > 0)
+                            .unwrap_or(false)
+                })
+                .count() as u32
+        })
+        .unwrap_or(0)
 }
 
 async fn pump_lines<R>(reader: Option<R>, app: AppHandle, disc: u32, log: Arc<Mutex<File>>)
@@ -642,6 +790,64 @@ fn default_audio_root() -> PathBuf {
         .join("AudioBooks")
 }
 
+fn drive_matches(info: &DriveInfo, value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+
+    let no_colon = value.trim_end_matches(':');
+    info.letter.eq_ignore_ascii_case(value)
+        || info
+            .letter
+            .trim_end_matches(':')
+            .eq_ignore_ascii_case(no_colon)
+        || info.index.to_string() == value
+}
+
+fn normalize_drive(drives: &[DriveInfo], saved: Option<&str>) -> String {
+    let saved = saved.map(str::trim).filter(|value| !value.is_empty());
+
+    if let Some(value) = saved
+        && let Some(found) = drives.iter().find(|drive| drive_matches(drive, value))
+    {
+        return found.letter.clone();
+    }
+
+    if let Some(first) = drives.first() {
+        return first.letter.clone();
+    }
+
+    saved.unwrap_or("0").to_string()
+}
+
+fn resolve_drive(drive: &str) -> Result<(u32, String), String> {
+    let drives = detect_drives().unwrap_or_default();
+    let value = drive.trim();
+
+    if let Some(found) = drives.iter().find(|info| drive_matches(info, value)) {
+        return Ok((found.index, found.letter.clone()));
+    }
+
+    if let Ok(index) = value.parse::<u32>() {
+        if let Some(found) = drives.iter().find(|info| info.index == index) {
+            return Ok((found.index, found.letter.clone()));
+        }
+
+        if drives.is_empty() {
+            return Ok((index, value.to_string()));
+        }
+
+        return Err(format!(
+            "Drive {index} is no longer available. Refresh the drive list and choose a drive."
+        ));
+    }
+
+    Err(format!(
+        "Drive {value} is not currently detected. Refresh the drive list and choose a drive."
+    ))
+}
+
 fn detect_drives() -> Result<Vec<DriveInfo>, String> {
     #[cfg(windows)]
     {
@@ -698,15 +904,15 @@ async fn eject_drive_inner(drive: &str) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        let index = drive.trim().parse::<u32>().unwrap_or(0);
+        let (_, letter) = resolve_drive(drive)?;
+        let letter = letter.replace('\'', "''");
         let script = format!(
             r#"
 $drives = @(Get-CimInstance Win32_CDROMDrive)
 if ($drives.Count -eq 0) {{ exit 2 }}
-$index = {index}
-if ($index -ge $drives.Count) {{ $index = 0 }}
-$letter = $drives[$index].Drive
-try {{ (New-Object -ComObject Shell.Application).Namespace(17).ParseName($letter).InvokeVerb('Eject') }} catch {{ exit 1 }}
+$drive = $drives | Where-Object {{ $_.Drive -eq '{letter}' }} | Select-Object -First 1
+if (-not $drive) {{ exit 3 }}
+try {{ (New-Object -ComObject Shell.Application).Namespace(17).ParseName($drive.Drive).InvokeVerb('Eject') }} catch {{ exit 1 }}
 "#
         );
 
@@ -768,12 +974,27 @@ fn emit_manifest(app: &AppHandle, manifest: &BookManifest) {
 }
 
 fn emit_state(app: &AppHandle, disc: u32, stage: &str, message: &str) {
+    emit_state_progress(app, disc, stage, message, None, None, None);
+}
+
+fn emit_state_progress(
+    app: &AppHandle,
+    disc: u32,
+    stage: &str,
+    message: &str,
+    track: Option<u32>,
+    track_total: Option<u32>,
+    percent: Option<u32>,
+) {
     let _ = app.emit(
         "rip-state",
         StatePayload {
             disc,
             stage: stage.to_string(),
             message: message.to_string(),
+            track,
+            track_total,
+            percent,
         },
     );
 }
@@ -832,5 +1053,36 @@ mod tests {
 
         let files = normalize_and_install(book.path(), 100, &wip).unwrap();
         assert_eq!(files, vec!["cd100_t01.mp3".to_string()]);
+    }
+
+    #[test]
+    fn normalizes_saved_drive_selection_to_a_letter() {
+        let drives = vec![
+            DriveInfo {
+                index: 0,
+                letter: "D:".to_string(),
+                name: "Drive one".to_string(),
+            },
+            DriveInfo {
+                index: 1,
+                letter: "E:".to_string(),
+                name: "Drive two".to_string(),
+            },
+        ];
+
+        assert_eq!(normalize_drive(&drives, Some("0")), "D:");
+        assert_eq!(normalize_drive(&drives, Some("e")), "E:");
+        assert_eq!(normalize_drive(&drives, Some("missing")), "D:");
+        assert_eq!(normalize_drive(&[], Some("E:")), "E:");
+    }
+
+    #[test]
+    fn counts_non_empty_audio_files_for_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("01.mp3"), b"audio").unwrap();
+        fs::write(dir.path().join("02.flac"), b"").unwrap();
+        fs::write(dir.path().join("notes.txt"), b"not audio").unwrap();
+
+        assert_eq!(count_audio_files(dir.path()), 1);
     }
 }

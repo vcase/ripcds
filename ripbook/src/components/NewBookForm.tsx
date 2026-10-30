@@ -1,4 +1,5 @@
 import type { AppInfo, BookForm, FreacInfo } from "../types";
+import { FreacControls } from "./FreacControls";
 
 interface NewBookFormProps {
   form: BookForm;
@@ -7,8 +8,15 @@ interface NewBookFormProps {
   onAudioRootChange: (value: string) => void;
   drive: string;
   onDriveChange: (value: string) => void;
+  onRefreshDrives: () => void;
+  onLookupDisc: () => void;
+  metadataBusy: boolean;
   freacPath: string;
   onFreacPathChange: (value: string) => void;
+  freacVersion: string;
+  onFreacVersionChange: (value: string) => void;
+  onInstallFreac: () => void;
+  installingFreac: boolean;
   probe: FreacInfo | null;
   info: AppInfo | null;
   busy: boolean;
@@ -25,8 +33,15 @@ export function NewBookForm({
   onAudioRootChange,
   drive,
   onDriveChange,
+  onRefreshDrives,
+  onLookupDisc,
+  metadataBusy,
   freacPath,
   onFreacPathChange,
+  freacVersion,
+  onFreacVersionChange,
+  onInstallFreac,
+  installingFreac,
   probe,
   info,
   busy,
@@ -102,6 +117,22 @@ export function NewBookForm({
           />
         </label>
 
+        <div className="field field--wide metadata-row">
+          <button
+            type="button"
+            className="button"
+            onClick={onLookupDisc}
+            disabled={busy || metadataBusy}
+          >
+            {metadataBusy ? "Reading disc…" : "Read disc metadata"}
+          </button>
+          <p className="form-hint">
+            Audio CDs do not store the total number of discs in a set, so set the
+            last disc up front (you can add discs later). If the inserted disc has
+            a MusicBrainz match, this fills in author, title, and the disc count.
+          </p>
+        </div>
+
         <label className="field field--wide">
           <span>Audiobook library folder</span>
           <div className="input-row">
@@ -122,69 +153,51 @@ export function NewBookForm({
 
         <label className="field">
           <span>CD/DVD drive</span>
-          <select
-            value={drive}
-            onChange={(event) => onDriveChange(event.target.value)}
-          >
-            {info && info.drives.length > 0 ? (
-              info.drives.map((entry) => (
-                <option key={entry.index} value={String(entry.index)}>
-                  Drive {entry.index}: {entry.letter} {entry.name}
-                </option>
-              ))
-            ) : (
-              <option value="0">Drive 0 (default)</option>
-            )}
-          </select>
+          <div className="input-row">
+            <select
+              value={drive}
+              onChange={(event) => onDriveChange(event.target.value)}
+            >
+              {info && info.drives.length > 0 ? (
+                info.drives.map((entry) => (
+                  <option key={entry.letter} value={entry.letter}>
+                    Drive {entry.letter} {entry.name}
+                  </option>
+                ))
+              ) : (
+                <option value={drive}>{drive === "0" ? "No drive detected" : `${drive} (not detected)`}</option>
+              )}
+            </select>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={onRefreshDrives}
+            >
+              Refresh
+            </button>
+          </div>
           <small>
             {info && info.drives.length > 0
               ? `${info.drives.length} optical drive${
                   info.drives.length === 1 ? "" : "s"
-                } detected`
-              : "No optical drive detected. You can still configure the book."}
+                } detected. Refresh after adding a drive.`
+              : "No optical drive detected yet. Add or power on a drive, then press Refresh."}
           </small>
         </label>
 
         <label className="field field--wide">
           <span>fre:ac command line tool</span>
-          <div className="input-row">
-            <input
-              value={freacPath}
-              onChange={(event) => onFreacPathChange(event.target.value)}
-              placeholder="Path to freaccmd.exe"
-            />
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={onBrowseFreac}
-            >
-              Browse
-            </button>
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={onProbe}
-            >
-              Check
-            </button>
-          </div>
-          {probe ? (
-            <small
-              className={
-                probe.exists && probe.version !== "unknown"
-                  ? "hint-ok"
-                  : "hint-warn"
-              }
-            >
-              {probe.message}
-              {probe.exists ? ` (fre:ac ${probe.version})` : ""}
-            </small>
-          ) : (
-            <small>
-              RipBook uses fre:ac’s <code>freaccmd.exe</code>. Install fre:ac or
-              bundle a portable copy with the app.
-            </small>
-          )}
+          <FreacControls
+            path={freacPath}
+            onPathChange={onFreacPathChange}
+            probe={probe}
+            onProbe={onProbe}
+            onBrowse={onBrowseFreac}
+            version={freacVersion}
+            onVersionChange={onFreacVersionChange}
+            onInstall={onInstallFreac}
+            installing={installingFreac}
+          />
         </label>
 
         <div className="form-actions field--wide">

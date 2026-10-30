@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -30,6 +31,20 @@ pub fn candidate_paths(app: &AppHandle) -> Vec<PathBuf> {
             candidates.push(base.join("freaccmd.exe"));
             candidates.push(base.join("freaccmd"));
         }
+    }
+
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let mut downloads = fs::read_dir(data_dir.join("freac"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path().join("freaccmd.exe"))
+            .filter(|path| path.is_file())
+            .collect::<Vec<_>>();
+
+        downloads.sort();
+        downloads.reverse();
+        candidates.extend(downloads);
     }
 
     #[cfg(windows)]
